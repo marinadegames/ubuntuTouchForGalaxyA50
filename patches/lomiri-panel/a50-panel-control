@@ -1,0 +1,111 @@
+#!/bin/sh
+set -eu
+BASE=/var/lib/a50-panel
+TARGET=/usr/share/lomiri/Panel
+[ "$(id -u)" = 0 ] || { echo 'Run with sudo.' >&2; exit 1; }
+SESSION_UID=$(id -u phablet)
+restart=${2:-}
+case "$restart" in ''|--restart) ;; *) echo 'Unknown option.' >&2; exit 2 ;; esac
+user_command() {
+    runuser -u phablet -- env XDG_RUNTIME_DIR="/run/user/$SESSION_UID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$SESSION_UID/bus" "$@"
+}
+set_blur() {
+    user_command gsettings set com.lomiri.Shell enable-blur "$1"
+}
+readonly_root=0
+finish() {
+    if [ "$readonly_root" = 1 ]; then mount -o remount,ro /; fi
+}
+trap finish EXIT
+writable_root() {
+    case ",$(findmnt -n -o OPTIONS /)," in
+        *,ro,*) mount -o remount,rw /; readonly_root=1 ;;
+    esac
+}
+check_version() {
+    if [ "$(cat "$BASE/lomiri-version")" != "$(dpkg-query -W -f='${Version}' lomiri-common)" ]; then
+        echo 'Lomiri has changed; update the custom panel for this version before enabling it.' >&2
+        exit 1
+    fi
+}
+unmount_custom() {
+    while mountpoint -q "$TARGET"; do
+        source=$(findmnt -rn -M "$TARGET" -o FSROOT)
+        case "$source" in
+            */a50-panel/custom/Panel)
+                # Lomiri mmaps QML/fonts on this bind mount. Detach it from the
+                # filesystem now; existing references expire on shell restart.
+                umount "$TARGET" 2>/dev/null || umount -l "$TARGET"
+                ;;
+            *) echo 'Refusing to unmount another panel installation.' >&2; exit 1 ;;
+        esac
+    done
+}
+restart_shell() {
+    # A terminal inside Lomiri can die with its session. Let the system manager
+    # perform the restart after this command has returned to the caller.
+    systemd-run --quiet --collect --unit="a50-panel-restart-$(date +%s)-$$" --on-active=2s \
+        /usr/sbin/runuser -u phablet -- /usr/bin/env \
+        XDG_RUNTIME_DIR="/run/user/$SESSION_UID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$SESSION_UID/bus" \
+        /usr/bin/systemctl --user restart lomiri-full-greeter.service
+    echo 'Lomiri will restart in 2 seconds. Open applications may close.'
+}
+if [ "$restart" = --restart ]; then
+    user_command systemctl --user is-active --quiet lomiri-full-greeter.service
+fi
+case "${1:-status}" in
+    mount)
+        check_version
+        [ -f "$BASE/custom/Panel/A50QuickSettings.qml" ]
+        if mountpoint -q "$TARGET"; then
+            source=$(findmnt -rn -M "$TARGET" -o FSROOT)
+            case "$source" in */a50-panel/custom/Panel) exit 0 ;; *) echo 'Unexpected mount on panel directory.' >&2; exit 1 ;; esac
+        fi
+        mount --bind "$BASE/custom/Panel" "$TARGET"
+        mount -o remount,bind,ro "$TARGET"
+        ;;
+    unmount)
+        unmount_custom
+        ;;
+    custom)
+        check_version
+        [ -f "$BASE/custom/Panel/A50QuickSettings.qml" ]
+        writable_root
+        systemctl enable --now a50-custom-panel.service
+        # --now does not rerun ExecStart for an already-active oneshot service.
+        "$0" mount
+        mountpoint -q "$TARGET"
+        [ -f "$TARGET/A50QuickSettings.qml" ]
+        [ ! -f "$BASE/stock-enable-blur" ] || set_blur false
+        echo 'Custom panel files enabled and verified.'
+        ;;
+    stock)
+        writable_root
+        systemctl disable --now a50-custom-panel.service
+        # ExecStop is skipped when the service is already inactive/failed,
+        # including installations left mounted by the old busy-unmount bug.
+        unmount_custom
+        if [ -f "$TARGET/A50QuickSettings.qml" ]; then
+            echo 'Custom files remain in the stock panel directory; restoration failed.' >&2
+            exit 1
+        fi
+        if [ "$(cat "$BASE/lomiri-version")" = "$(dpkg-query -W -f='${Version}' lomiri-common)" ]; then
+            (cd "$TARGET/.." && sha256sum --quiet -c "$BASE/stock.sha256")
+        fi
+        [ ! -f "$BASE/stock-enable-blur" ] || set_blur "$(cat "$BASE/stock-enable-blur")"
+        if systemctl is-failed --quiet a50-custom-panel.service; then
+            systemctl reset-failed a50-custom-panel.service
+        fi
+        echo 'Stock panel files restored and verified.'
+        ;;
+    recover)
+        exec "$0" stock --restart
+        ;;
+    status)
+        if [ -f "$TARGET/A50QuickSettings.qml" ]; then echo custom; else echo stock; fi
+        ;;
+    *) echo 'Usage: a50-panel-control custom|stock [--restart] | status' >&2; exit 2 ;;
+esac
+finish
+readonly_root=0
+if [ "$restart" = --restart ]; then restart_shell; fi

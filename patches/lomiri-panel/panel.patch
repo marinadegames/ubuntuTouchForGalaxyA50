@@ -1,0 +1,372 @@
+--- a/Panel/WithCutouts/LomiriPanel/Panel.qml
++++ b/Panel/WithCutouts/LomiriPanel/Panel.qml
+@@ -58,6 +58,40 @@
+     // Whether our expanded menus should take up the full width of the panel
+     property bool partialWidth: width >= units.gu(60)
+ 
++    // Resolve the existing scene independently of the enable-blur preference.
++    // Only a two-pixel edge strip is sampled for the top bar; no blur is used.
++    property Item a50AppScene: null
++    property Item a50LockScene: null
++    readonly property Item a50SceneSource: greeterShown && a50LockScene ? a50LockScene : a50AppScene
++    function a50FindScene(item, lockScene) {
++        if (!item) return null
++        if (!lockScene && item.objectName === "stages") return item
++        if (lockScene && item.hasOwnProperty("allowFingerprint") && item.hasOwnProperty("background") && item.hasOwnProperty("shown")) return item
++        var children = item.children || []
++        for (var i = 0; i < children.length; ++i) {
++            var found = a50FindScene(children[i], lockScene)
++            if (found) return found
++        }
++        return null
++    }
++    function a50BindScenes() {
++        var scene = root
++        while (scene.parent) scene = scene.parent
++        if (!a50AppScene) a50AppScene = a50FindScene(scene, false)
++        if (!a50LockScene) a50LockScene = a50FindScene(scene, true)
++    }
++    onGreeterShownChanged: if (a50SceneProbe) { a50SceneProbe.attempts = 0; a50SceneProbe.start() }
++    Timer {
++        id: a50SceneProbe
++        property int attempts: 0
++        interval: 100; running: true; repeat: true
++        onTriggered: {
++            root.a50BindScenes()
++            attempts++
++            if ((root.a50AppScene && (!root.greeterShown || root.a50LockScene)) || attempts >= 30) stop()
++        }
++    }
++
+     property string mode: "staged"
+     property PanelState panelState
+ 
+@@ -173,7 +207,7 @@
+ 
+         Rectangle {
+             id: panelAreaBackground
+-            color: callHint.visible ? theme.palette.normal.activity :
++            color: __indicators.customStatusBar ? "transparent" : callHint.visible ? theme.palette.normal.activity :
+                        Qt.hsla(0, 0, Math.round(theme.palette.normal.background.hslLightness), 1)
+             anchors {
+                 top: parent.top
+@@ -421,7 +455,9 @@
+             }
+             width: root.menuWidth
+             minimizedPanelHeight: root.minimizedPanelHeight
+-            expandedPanelHeight: root.expandedPanelHeight
++            customStatusBar: root.mode === "staged" && !callHint.active
++            customQuickSettings: !root.greeterShown && root.mode === "staged"
++            expandedPanelHeight: customQuickSettings ? root.minimizedPanelHeight : root.expandedPanelHeight
+             openedHeight: root.height
+             screenIndex: root.screenIndex
+             orientation: root.orientation
+@@ -430,7 +466,7 @@
+             enableHint: !callHint.active && !fullscreenMode
+             showOnClick: !callHint.visible
+             panelColor: panelAreaBackground.color
+-            blurSource: root.blurSource
++            blurSource: customStatusBar ? root.a50SceneSource : root.blurSource
+             blurRect: Qt.rect(x,
+                               0,
+                               root.width,
+--- a/Panel/WithCutouts/LomiriPanel/PanelMenu.qml
++++ b/Panel/WithCutouts/LomiriPanel/PanelMenu.qml
+@@ -32,6 +32,8 @@
+     property int minimizedPanelHeight: units.gu(3)
+     property int expandedPanelHeight: units.gu(7)
+     property real openedHeight: units.gu(71)
++    property bool customQuickSettings: false
++    property bool customStatusBar: false
+     property bool enableHint: true
+     property bool showOnClick: true
+     property color panelColor: Qt.hsla(0, 0, Math.round(theme.palette.normal.background.hslLightness), 1)
+@@ -100,10 +102,17 @@
+         y: 0
+         width: root.blurRect.width
+         height: root.blurRect.height
+-        visible: root.height > root.minimizedPanelHeight
++        visible: root.height > root.minimizedPanelHeight && !root.customStatusBar
+         sourceItem: root.blurSource
+         blurRect: root.blurRect
+         occluding: false
++    }
++
++    Rectangle {
++        anchors.fill: parent
++        color: "#f223111d"
++        opacity: Math.min(1, root.unitProgress)
++        visible: root.customQuickSettings && !root.fullyClosed
+     }
+ 
+     Item {
+@@ -121,6 +130,7 @@
+                            root.panelColor.b,
+                            1.0)
+             opacity: 0.85
++            visible: !root.customQuickSettings
+             anchors.fill: parent
+         }
+ 
+@@ -145,8 +155,34 @@
+             }
+             height: openedHeight - bar.height - handle.height
+             model: root.model
+-            visible: root.unitProgress > 0
++            visible: root.unitProgress > 0 && !root.customQuickSettings
+             currentMenuIndex: bar.currentItemIndex
++        }
++    }
++
++    Item {
++        objectName: "a50QuickSettingsViewport"
++        anchors {
++            left: parent.left; right: parent.right
++            top: parent.top; topMargin: root.minimizedPanelHeight
++        }
++        height: Math.max(0, root.height - root.minimizedPanelHeight - handle.height)
++        clip: true
++        // Keep the positioners laid out even behind a closed, empty clip.
++        visible: root.customQuickSettings
++        enabled: !root.fullyClosed
++
++        Loader {
++            id: quickSettingsLoader
++            objectName: "a50QuickSettingsLoader"
++            width: parent.width
++            // Only the viewport follows the drag. Keep the completed layout
++            // at its full height, including its footer, throughout opening.
++            height: Math.max(0, root.openedHeight - root.minimizedPanelHeight - handle.height)
++            active: root.customQuickSettings
++            sourceComponent: A50QuickSettings {
++                onCloseRequested: root.hide()
++            }
+         }
+     }
+ 
+@@ -191,6 +227,7 @@
+             right: parent.right
+         }
+         expanded: false
++        visible: (!root.customStatusBar || !root.fullyClosed) && (!root.customQuickSettings || root.fullyClosed)
+         enableLateralChanges: false
+         finishedExpanding: !indicatorsBarHeightAnimation.running
+         lateralPosition: -1
+@@ -204,6 +241,14 @@
+                 easing: LomiriAnimation.StandardEasing
+             }
+         }
++    }
++
++    Loader {
++        anchors { left: parent.left; right: parent.right; top: parent.top }
++        height: root.minimizedPanelHeight
++        active: root.customStatusBar
++        visible: root.customStatusBar && (root.fullyClosed || root.customQuickSettings)
++        sourceComponent: A50StatusBar { backdropSource: root.blurSource; shadeOpacity: root.customQuickSettings ? Math.min(1, root.unitProgress) * (242 / 255) : 0 }
+     }
+ 
+     ScrollCalculator {
+@@ -290,7 +335,7 @@
+         objectName: "hideDragHandle"
+         anchors.fill: handle
+         direction: Direction.Upwards
+-        enabled: root.shown && root.available && !hideAnimation.running && !showAnimation.running
++        enabled: root.shown && root.available && !hideAnimation.running && !showAnimation.running && !(quickSettingsLoader.item && quickSettingsLoader.item.sliderDragging)
+         hintDisplacement: units.gu(3)
+         autoCompleteDragThreshold: maxTotalDragDistance / 6
+         stretch: true
+--- a/Panel/WithoutCutouts/LomiriPanel/Panel.qml
++++ b/Panel/WithoutCutouts/LomiriPanel/Panel.qml
+@@ -57,6 +57,40 @@
+     // Whether our expanded menus should take up the full width of the panel
+     property bool partialWidth: width >= units.gu(60)
+ 
++    // Resolve the existing scene independently of the enable-blur preference.
++    // Only a two-pixel edge strip is sampled for the top bar; no blur is used.
++    property Item a50AppScene: null
++    property Item a50LockScene: null
++    readonly property Item a50SceneSource: greeterShown && a50LockScene ? a50LockScene : a50AppScene
++    function a50FindScene(item, lockScene) {
++        if (!item) return null
++        if (!lockScene && item.objectName === "stages") return item
++        if (lockScene && item.hasOwnProperty("allowFingerprint") && item.hasOwnProperty("background") && item.hasOwnProperty("shown")) return item
++        var children = item.children || []
++        for (var i = 0; i < children.length; ++i) {
++            var found = a50FindScene(children[i], lockScene)
++            if (found) return found
++        }
++        return null
++    }
++    function a50BindScenes() {
++        var scene = root
++        while (scene.parent) scene = scene.parent
++        if (!a50AppScene) a50AppScene = a50FindScene(scene, false)
++        if (!a50LockScene) a50LockScene = a50FindScene(scene, true)
++    }
++    onGreeterShownChanged: if (a50SceneProbe) { a50SceneProbe.attempts = 0; a50SceneProbe.start() }
++    Timer {
++        id: a50SceneProbe
++        property int attempts: 0
++        interval: 100; running: true; repeat: true
++        onTriggered: {
++            root.a50BindScenes()
++            attempts++
++            if ((root.a50AppScene && (!root.greeterShown || root.a50LockScene)) || attempts >= 30) stop()
++        }
++    }
++
+     property string mode: "staged"
+     property PanelState panelState
+ 
+@@ -172,7 +206,7 @@
+ 
+         Rectangle {
+             id: panelAreaBackground
+-            color: callHint.visible ? theme.palette.normal.activity :
++            color: __indicators.customStatusBar ? "transparent" : callHint.visible ? theme.palette.normal.activity :
+                        Qt.hsla(0, 0, Math.round(theme.palette.normal.background.hslLightness), 1)
+             anchors {
+                 top: parent.top
+@@ -419,14 +453,16 @@
+             }
+             width: root.menuWidth
+             minimizedPanelHeight: root.minimizedPanelHeight
+-            expandedPanelHeight: root.expandedPanelHeight
++            customStatusBar: root.mode === "staged" && !callHint.active
++            customQuickSettings: !root.greeterShown && root.mode === "staged"
++            expandedPanelHeight: customQuickSettings ? root.minimizedPanelHeight : root.expandedPanelHeight
+             openedHeight: root.height
+ 
+             overFlowWidth: width - appMenuClear
+             enableHint: !callHint.active && !fullscreenMode
+             showOnClick: !callHint.visible
+             panelColor: panelAreaBackground.color
+-            blurSource: root.blurSource
++            blurSource: customStatusBar ? root.a50SceneSource : root.blurSource
+             blurRect: Qt.rect(x,
+                               0,
+                               root.width,
+--- a/Panel/WithoutCutouts/LomiriPanel/PanelMenu.qml
++++ b/Panel/WithoutCutouts/LomiriPanel/PanelMenu.qml
+@@ -32,6 +32,8 @@
+     property int minimizedPanelHeight: units.gu(3)
+     property int expandedPanelHeight: units.gu(7)
+     property real openedHeight: units.gu(71)
++    property bool customQuickSettings: false
++    property bool customStatusBar: false
+     property bool enableHint: true
+     property bool showOnClick: true
+     property color panelColor: Qt.hsla(0, 0, Math.round(theme.palette.normal.background.hslLightness), 1)
+@@ -98,10 +100,17 @@
+         y: 0
+         width: root.blurRect.width
+         height: root.blurRect.height
+-        visible: root.height > root.minimizedPanelHeight
++        visible: root.height > root.minimizedPanelHeight && !root.customStatusBar
+         sourceItem: root.blurSource
+         blurRect: root.blurRect
+         occluding: false
++    }
++
++    Rectangle {
++        anchors.fill: parent
++        color: "#f223111d"
++        opacity: Math.min(1, root.unitProgress)
++        visible: root.customQuickSettings && !root.fullyClosed
+     }
+ 
+     Item {
+@@ -119,6 +128,7 @@
+                            root.panelColor.b,
+                            1.0)
+             opacity: 0.85
++            visible: !root.customQuickSettings
+             anchors.fill: parent
+         }
+ 
+@@ -143,8 +153,34 @@
+             }
+             height: openedHeight - bar.height - handle.height
+             model: root.model
+-            visible: root.unitProgress > 0
++            visible: root.unitProgress > 0 && !root.customQuickSettings
+             currentMenuIndex: bar.currentItemIndex
++        }
++    }
++
++    Item {
++        objectName: "a50QuickSettingsViewport"
++        anchors {
++            left: parent.left; right: parent.right
++            top: parent.top; topMargin: root.minimizedPanelHeight
++        }
++        height: Math.max(0, root.height - root.minimizedPanelHeight - handle.height)
++        clip: true
++        // Keep the positioners laid out even behind a closed, empty clip.
++        visible: root.customQuickSettings
++        enabled: !root.fullyClosed
++
++        Loader {
++            id: quickSettingsLoader
++            objectName: "a50QuickSettingsLoader"
++            width: parent.width
++            // Only the viewport follows the drag. Keep the completed layout
++            // at its full height, including its footer, throughout opening.
++            height: Math.max(0, root.openedHeight - root.minimizedPanelHeight - handle.height)
++            active: root.customQuickSettings
++            sourceComponent: A50QuickSettings {
++                onCloseRequested: root.hide()
++            }
+         }
+     }
+ 
+@@ -189,12 +225,21 @@
+             right: parent.right
+         }
+         expanded: false
++        visible: (!root.customStatusBar || !root.fullyClosed) && (!root.customQuickSettings || root.fullyClosed)
+         enableLateralChanges: false
+         lateralPosition: -1
+         unitProgress: root.unitProgress
+ 
+         height: expanded ? expandedPanelHeight : minimizedPanelHeight
+         Behavior on height { NumberAnimation { duration: LomiriAnimation.SnapDuration; easing: LomiriAnimation.StandardEasing } }
++    }
++
++    Loader {
++        anchors { left: parent.left; right: parent.right; top: parent.top }
++        height: root.minimizedPanelHeight
++        active: root.customStatusBar
++        visible: root.customStatusBar && (root.fullyClosed || root.customQuickSettings)
++        sourceComponent: A50StatusBar { backdropSource: root.blurSource; shadeOpacity: root.customQuickSettings ? Math.min(1, root.unitProgress) * (242 / 255) : 0 }
+     }
+ 
+     ScrollCalculator {
+@@ -281,7 +326,7 @@
+         objectName: "hideDragHandle"
+         anchors.fill: handle
+         direction: Direction.Upwards
+-        enabled: root.shown && root.available && !hideAnimation.running && !showAnimation.running
++        enabled: root.shown && root.available && !hideAnimation.running && !showAnimation.running && !(quickSettingsLoader.item && quickSettingsLoader.item.sliderDragging)
+         hintDisplacement: units.gu(3)
+         autoCompleteDragThreshold: maxTotalDragDistance / 6
+         stretch: true
+--- a/Panel/PanelMenuPage.qml
++++ b/Panel/PanelMenuPage.qml
+@@ -25,6 +25,7 @@
+ PageStack {
+     id: root
+ 
++    readonly property real menuContentHeight: currentPage ? currentPage.menuContentHeight : 0
+     property var submenuIndex: undefined
+     property QtObject menuModel: null
+     property Component factory
+@@ -74,6 +75,7 @@
+         Page {
+             id: page
+ 
++            readonly property real menuContentHeight: listView.contentHeight
+             property alias menuModel: listView.model
+             property alias title: backLabel.title
+             property bool isSubmenu: false

@@ -1,0 +1,13 @@
+[Unit]
+Description=Galaxy A50 flashlight access for the video group
+After=lxc-android-config.service
+Wants=lxc-android-config.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/a50-flashlight-permissions.sh
+RemainAfterExit=yes
+TimeoutStartSec=45
+
+[Install]
+WantedBy=multi-user.target

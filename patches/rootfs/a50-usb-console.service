@@ -1,0 +1,12 @@
+[Unit]
+Description=Samsung A50 USB serial console gadget
+After=systemd-udev-settle.service
+Before=serial-getty@ttyGS0.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/a50-usb-console.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

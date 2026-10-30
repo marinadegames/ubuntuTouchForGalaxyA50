@@ -1,0 +1,33 @@
+--- a/usr/lib/python3/dist-packages/libertine/ChrootContainer.py
++++ b/usr/lib/python3/dist-packages/libertine/ChrootContainer.py
+@@ -116,7 +116,10 @@
+         tarball_tar = tarfile.open(fileobj=tarball_res.raw, mode='r|*')
+ 
+         os.makedirs(self.root_path, exist_ok=True)
+-        tarball_tar.extractall(path=self.root_path)
++        # Ubuntu Base is a filesystem image containing absolute symlinks.
++        # Python 3.14 defaults to the data filter, which rejects those links.
++        # The tar filter retains filesystem links while checking member paths.
++        tarball_tar.extractall(path=self.root_path, filter='tar')
+ 
+         # Install fakeroot inside the container.
+         # This is the only time we use bwrap to fake root permission.
+@@ -185,6 +188,18 @@
+         self.update_packages()
+ 
+         for package in self.default_packages:
++            # Some Ubuntu releases no longer publish the legacy GTK input
++            # modules. Keep them when available without preventing all apps
++            # from running when an optional input module is absent.
++            if package in ('maliit-inputcontext-gtk2', 'maliit-inputcontext-gtk3'):
++                available = self.run_in_container(
++                    "sh -c " + shlex.quote(
++                        "apt-cache show " + shlex.quote(package) +
++                        " >/dev/null 2>&1")) == 0
++                if not available:
++                    utils.get_logger().warning(
++                        "Optional input module '%s' is unavailable", package)
++                    continue
+             if not self.install_package(package, update_cache=False):
+                 utils.get_logger().error(utils._("Failure installing '{package_name}' during container creation".format(package_name=package)))
+                 self.destroy_libertine_container()

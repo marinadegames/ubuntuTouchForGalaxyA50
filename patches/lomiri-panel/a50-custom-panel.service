@@ -1,0 +1,14 @@
+[Unit]
+Description=Galaxy A50 custom quick settings panel
+After=local-fs.target
+Before=lightdm.service
+ConditionPathExists=/var/lib/a50-panel/custom/Panel/A50QuickSettings.qml
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/a50-panel-control mount
+ExecStop=/usr/local/sbin/a50-panel-control unmount
+
+[Install]
+WantedBy=multi-user.target
