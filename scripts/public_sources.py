@@ -67,14 +67,17 @@ def audit(items):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--export', action='store_true')
+    parser.add_argument('--version', default='0.0.1')
     args = parser.parse_args()
+    if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?', args.version):
+        parser.error('--version must be a version such as 0.0.1')
     items = list(files())
     audit(items)
     print(f'Privacy source audit passed: {len(items)} files.')
     if args.export:
         target = ROOT / 'dist'
         target.mkdir(exist_ok=True)
-        out = target / 'LinuxGalaxyA50-github-source.zip'
+        out = target / f'LinuxGalaxyA50-{args.version}-source.zip'
         with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as z:
             for p, rel in items:
                 info = zipfile.ZipInfo('LinuxGalaxyA50/' + rel.as_posix(), (2026, 1, 1, 0, 0, 0))

@@ -6,6 +6,8 @@
 !/.gitignore
 !/README.md
 !/assets/warning.svg
+!/build.sh
+!/builder/Dockerfile
 !/installer/META-INF/com/google/android/update-binary
 !/installer/META-INF/com/google/android/updater-script
 !/installer/install/a50-install.sh
@@ -37,12 +39,14 @@
 !/patches/rootfs/ttyGS0-override.conf
 !/scripts/audit_rootfs.py
 !/scripts/build_public_image.py
+!/scripts/build_release.py
 !/scripts/check_git_privacy.py
 !/scripts/export_ext4.c
 !/scripts/public_sources.py
 !/scripts/sanitize_rootfs.py
 !/scripts/strip_optional_features.py
 !/scripts/test_installer.py
+!/scripts/test_build_release.py
 !/scripts/test_privacy.py
 
 # Private data and generated files, including inside allowed source trees.

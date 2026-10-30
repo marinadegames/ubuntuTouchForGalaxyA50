@@ -39,7 +39,7 @@
 +    }
 +
      property string mode: "staged"
-     property PanelState panelState
+     property var panelState
  
 @@ -173,7 +207,7 @@
  
@@ -217,7 +217,7 @@
 +    }
 +
      property string mode: "staged"
-     property PanelState panelState
+     property var panelState
  
 @@ -172,7 +206,7 @@
  

@@ -6,6 +6,7 @@ import gzip
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import struct
 import subprocess
@@ -92,10 +93,17 @@ def main():
     p.add_argument('--privacy-report', type=Path, required=True)
     p.add_argument('--boot', type=Path, required=True)
     p.add_argument('--denylist', type=Path, required=True)
-    p.add_argument('--tools', type=Path, required=True, help='e2fsprogs build directory')
+    p.add_argument('--tools', type=Path, help='Optional e2fsprogs build directory; otherwise use installed tools')
+    p.add_argument('--work-dir', type=Path, default=ROOT / 'work')
     p.add_argument('--exporter', type=Path, required=True)
     p.add_argument('--output', type=Path, required=True)
+    p.add_argument('--version', default='0.0.1', help='Release version (default: 0.0.1)')
     args = p.parse_args()
+    if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?', args.version):
+        p.error('--version must be a version such as 0.0.1')
+    expected_name = f'ubuntu-touch-a50-{args.version}.zip'
+    if args.output.name != expected_name:
+        p.error('--output filename must be ' + expected_name)
     report = json.loads(args.privacy_report.read_text())
     if not report.get('passed') or report.get('archive_sha256') != sha(args.system_tar):
         raise ValueError('The supplied archive has no matching successful privacy audit')
@@ -105,18 +113,23 @@ def main():
         raise ValueError('Known personal identifier in boot image')
     args.output.parent.mkdir(parents=True, exist_ok=True)
     if args.output.exists(): raise ValueError('Refusing to overwrite an existing installer')
-    work = ROOT / 'work'; work.mkdir(exist_ok=True)
+    work = args.work_dir; work.mkdir(parents=True, exist_ok=True)
+    def tool(name, relative):
+        value = str(args.tools / relative) if args.tools else shutil.which(name)
+        if not value or not Path(value).is_file():
+            raise ValueError('Required filesystem tool missing: ' + name)
+        return value
     with tempfile.TemporaryDirectory(prefix='public-build-', dir=work) as temp:
         stage = Path(temp).resolve(); image = stage / 'rootfs.img'
         with image.open('xb') as f: f.truncate(6442450944)
         image.chmod(0o600)
-        mke2fs = str(args.tools / 'misc/mke2fs')
+        mke2fs = tool('mke2fs', 'misc/mke2fs')
         subprocess.run([mke2fs, '-q', '-t', 'ext4', '-F', '-b', '4096', '-I', '256',
                         '-L', 'ubuntu-touch', '-U', 'random', '-O', '^orphan_file,^metadata_csum_seed',
                         '-E', 'lazy_itable_init=0,lazy_journal_init=0,nodiscard',
                         '-d', str(args.system_tar.resolve()), str(image)], check=True)
-        xattr_count = restore_xattrs(args.system_tar, image, str(args.tools / 'debugfs/debugfs'), stage)
-        subprocess.run([str(args.tools / 'e2fsck/e2fsck'), '-fn', str(image)], check=True)
+        xattr_count = restore_xattrs(args.system_tar, image, tool('debugfs', 'debugfs/debugfs'), stage)
+        subprocess.run([tool('e2fsck', 'e2fsck/e2fsck'), '-fn', str(image)], check=True)
         exported = stage / 'verified.tar'
         subprocess.run([str(args.exporter.resolve()), str(image), str(exported)], check=True)
         expected, actual = signature(args.system_tar), signature(exported)
@@ -124,12 +137,14 @@ def main():
             different = sorted(n for n in expected.keys() | actual.keys() if expected.get(n) != actual.get(n))
             raise ValueError('Filesystem reconstruction mismatch: ' + ', '.join(different[:30]))
         print(f'Filesystem verified: {len(actual)} entries; {xattr_count} extended attributes.', flush=True)
+        exported.unlink()
         root_hash = sha(image)
         compressed = stage / 'rootfs.img.gz'
         with image.open('rb') as src, compressed.open('wb') as target:
             with gzip.GzipFile(filename='', mode='wb', fileobj=target, compresslevel=1, mtime=0) as gz:
                 shutil.copyfileobj(src, gz, 8 * 1024 * 1024)
-        manifest = ('device=a50\nmodel=SM-A505F\nrelease=26.04-1.x\nversion=2026-10-30-public-test\n'
+        manifest = ('device=a50\nmodel=SM-A505F\nrelease=26.04-1.x\n'
+                    f'version={args.version}\n'
                     'variant=public-test\nrootfs_bytes=6442450944\n'
                     f'boot_bytes={len(boot)}\nprivacy=system-only-fresh-filesystem\nhardware_clean_install_test=pending\n')
         sums = f'{hashlib.sha256(boot).hexdigest()}  boot.img\n{root_hash}  rootfs.img\n'
